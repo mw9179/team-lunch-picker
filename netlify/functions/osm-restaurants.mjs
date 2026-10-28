@@ -20,17 +20,32 @@ export default async request=>{
  if(request.method!=='GET')return response(405,{error:'GET 요청만 지원합니다.'});
  const params=new URL(request.url).searchParams,cats=params.getAll('category');
  if(!cats.length||cats.length>7||cats.some(c=>!CATEGORIES.includes(c)))return response(400,{error:'검색할 카테고리를 하나 이상 선택해 주세요.'});
- const chosen=[...new Set(cats)],key='hakdong-v1',cached=cache.get(key);let elements;
+ const chosen=[...new Set(cats)],key='hakdong-fast-v2',cached=cache.get(key);let elements;
  if(cached&&Date.now()-cached.time<10*60*1000)elements=cached.elements;
  else{
-  const q=`[out:json][timeout:20];nwr["amenity"~"^(restaurant|fast_food|food_court)$"]["name"](around:${RADIUS},${CENTER.lat},${CENTER.lon});out center tags;`;
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),24000);
+  // Query two distinct public Overpass services. First successful response wins.
+  // A single overloaded service must not block the whole lunch picker.
+  const q=`[out:json][timeout:7];node["amenity"~"^(restaurant|fast_food|food_court)$"]["name"](around:${RADIUS},${CENTER.lat},${CENTER.lon});out body;`; 
+  const endpoints=[
+   'https://overpass.private.coffee/api/interpreter',
+   'https://overpass.kumi.systems/api/interpreter'
+  ];
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),8500);
+  async function fetchFrom(endpoint){
+   const r=await fetch(endpoint,{method:'POST',body:new URLSearchParams({data:q}),headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},signal:controller.signal});
+   if(!r.ok)throw new Error(`서버 오류 (${r.status})`);
+   const data=await r.json();
+   if(!Array.isArray(data.elements))throw new Error('잘못된 지도 응답');
+   return data.elements;
+  }
   try{
-   const r=await fetch('https://overpass.kumi.systems/api/interpreter',{method:'POST',body:new URLSearchParams({data:q}),headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':'TeamLunchPicker/1.0 (noncommercial small-group demo)'},signal:controller.signal});
-   if(!r.ok){return response(503,{error:r.status===429?'무료 지도 서버가 사용량 제한 중입니다. 잠시 후 다시 검색해 주세요.':`무료 지도 서버 응답 오류 (${r.status}). 잠시 후 다시 시도해 주세요.`});}
-   const data=await r.json();elements=data.elements||[];cache.set(key,{time:Date.now(),elements});
-  }catch(e){return response(503,{error:e.name==='AbortError'?'무료 지도 검색이 지연됐습니다. 잠시 후 다시 시도해 주세요.':'무료 지도 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.'});}
-  finally{clearTimeout(timer);}
+   elements=await Promise.any(endpoints.map(fetchFrom));
+   cache.set(key,{time:Date.now(),elements});
+  }catch(e){
+   return response(503,{error:'무료 지도 서버가 8초 내에 응답하지 않았어요. 이 시간에는 식당 직접 등록을 이용해 주세요. 무료 검색 서버는 응답을 보장하지 않아요.'});
+  }finally{clearTimeout(timer);}
+
  }
  const seen=new Set();const items=[];
  for(const e of elements){const t=e.tags||{},name=(t['name:ko']||t.name||'').trim();if(!name)continue;
