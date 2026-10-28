@@ -103,11 +103,23 @@ $('draw').addEventListener('click',async()=>{
   button.setAttribute('aria-expanded',String(shouldOpen));
  });
 });
-async function start(){if(!ready){$('setup').hidden=false;text('connection','⚠ 설정 필요');$('draw').disabled=true;return;}
- try{db=createClient(config.SUPABASE_URL,config.SUPABASE_PUBLISHABLE_KEY);let {data:{session}}=await db.auth.getSession();if(!session){const {data,error}=await db.auth.signInAnonymously();if(error)throw error;session=data.session;}user=session.user;
- text('connection','● 실시간 연결');$('connection').classList.add('live');await refresh();
+async function start(){
+ window.__lunchStartup='starting';
+ if(!ready){$('setup').hidden=false;text('connection','⚠ 설정 필요');notify('GitHub의 config.js에서 Supabase URL과 Publishable Key를 확인해 주세요.');$('draw').disabled=true;window.__lunchStartup='config-error';return;}
+ const timeout=(p,label,ms=15000)=>Promise.race([p,new Promise((_,reject)=>setTimeout(()=>reject(new Error(label+'이(가) 15초 동안 응답하지 않았어요. Supabase 상태, 네트워크, Anonymous Sign-Ins를 확인해 주세요.')),ms))]);
+ try{
+  text('connection','● 로그인 확인 중');
+  db=createClient(config.SUPABASE_URL,config.SUPABASE_PUBLISHABLE_KEY);
+  const {data:sessionData,error:sessionError}=await timeout(db.auth.getSession(),'세션 확인');
+  if(sessionError)throw sessionError;
+  let session=sessionData?.session;
+  if(!session){text('connection','● 익명 로그인 중');const {data,error}=await timeout(db.auth.signInAnonymously(),'익명 로그인');if(error)throw error;session=data?.session;}
+  if(!session?.user)throw new Error('익명 로그인 세션이 만들어지지 않았어요.');
+  user=session.user;
+  text('connection','● 식당 목록 로딩 중');
+ await timeout(refresh(),'식당 목록 읽기');text('connection','● 실시간 연결');$('connection').classList.add('live');window.__lunchStartup='ready';
  db.channel('team-lunch-changes').on('postgres_changes',{event:'*',schema:'public',table:'restaurants'},refresh).on('postgres_changes',{event:'*',schema:'public',table:'votes'},refresh).on('postgres_changes',{event:'*',schema:'public',table:'draws'},refresh).subscribe(status=>{if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){text('connection','● 재연결 중');$('connection').classList.remove('live')}if(status==='SUBSCRIBED'){text('connection','● 실시간 연결');$('connection').classList.add('live');refresh()}});
  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
- }catch(err){text('connection','● 연결 실패');notify(`연결 실패: ${err.message}. Supabase 익명 로그인 설정을 확인해 주세요.`);}}
+ }catch(err){window.__lunchStartup='failed';text('connection','● 연결 실패');$('connection').classList.remove('live');notify(`연결 실패: ${err.message}`);$('draw').disabled=true;console.error('[Lunch App] Startup failed:',err);}}
 start();
 
