@@ -2,13 +2,9 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const $=id=>document.getElementById(id);
 const config=window.LUNCH_CONFIG||{};
 const ready=config.SUPABASE_URL?.startsWith('https://')&&!config.SUPABASE_URL.includes('YOUR_PROJECT')&&config.SUPABASE_PUBLISHABLE_KEY&&!config.SUPABASE_PUBLISHABLE_KEY.includes('YOUR_');
-let db,user,restaurants=[],votes=[],draws=[],filter='전체',busy=false,drawPool='team';
-let summaryOpen=false;
+let db,user,restaurants=[],votes=[],draws=[],busy=false;
+let summaryOpen=true, chosenCategories=new Set(),initializedCategories=false,openGroups=new Set();
 const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-const createdToday=r=>r.created_at&&new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(r.created_at))===day();
-function poolRestaurants(){return drawPool==='new'?restaurants.filter(createdToday):restaurants;}
-function updatePool(){document.querySelectorAll('[data-pool]').forEach(b=>b.classList.toggle('active',b.dataset.pool===drawPool));text('poolInfo',drawPool==='new'?`오늘 새로 추가된 식당 ${poolRestaurants().length}곳에서 추첨합니다. 주변 식당 검색 → 팀 목록 등록 후 이용하세요.`:`직원들이 등록한 전체 식당 ${restaurants.length}곳에서 추첨합니다.`);}
-document.querySelectorAll('[data-pool]').forEach(b=>b.addEventListener('click',()=>{drawPool=b.dataset.pool;updatePool()}));
 const text=(id,s)=>$(id).textContent=s;
 const notify=(s)=>text('message',s);
 const el=(tag,cls,txt)=>{const node=document.createElement(tag);if(cls)node.className=cls;if(txt!==undefined)node.textContent=txt;return node};
@@ -17,22 +13,37 @@ function render(){
  const today=day(),todayVotes=votes.filter(v=>v.vote_day===today);
  const counts=new Map();todayVotes.forEach(v=>counts.set(v.restaurant_id,(counts.get(v.restaurant_id)||0)+1));
  const mine=todayVotes.find(v=>v.voter_id===user?.id);
- text('restaurantCount',`${restaurants.length}곳`);text('toggleMenu',`📋 전체 식당 ${restaurants.length}곳 한눈에 보기 ${summaryOpen?'▲':'▼'}`);text('voteCount',`${todayVotes.length}명 참여`);updatePool();
+ text('restaurantCount',`${restaurants.length}곳`);text('toggleMenu',`📋 카테고리별 전체 식당 보기 ${summaryOpen?'▲':'▼'}`);text('voteCount',`${todayVotes.length}명 참여`);
  const cats=[...new Set(restaurants.map(r=>r.category))].sort((a,b)=>a.localeCompare(b,'ko'));
+ if(!initializedCategories){chosenCategories=new Set(cats);initializedCategories=true;}
+ // 새 카테고리도 기본 선택. 기존 사용자의 제외 설정은 유지.
+ const prior=window._previousCategories||new Set(cats);
+ cats.forEach(c=>{if(!prior.has(c))chosenCategories.add(c)});
+ chosenCategories=new Set([...chosenCategories].filter(c=>cats.includes(c)));
+ window._previousCategories=new Set(cats);
  $('categories').replaceChildren(...cats.map(c=>{const n=el('option');n.value=c;return n}));
+ const drawCategories=$('drawCategories');drawCategories.replaceChildren();
+ cats.forEach(c=>drawCategories.append(optionButton(`${chosenCategories.has(c)?'✓ ':''}${c}`,()=>{if(chosenCategories.has(c))chosenCategories.delete(c);else chosenCategories.add(c);render()},chosenCategories.has(c)?'active':'')));
+ text('categoryPickCount',`${chosenCategories.size}/${cats.length}개 선택`);
  const vl=$('voteList');vl.replaceChildren();
  [...restaurants].sort((a,b)=>(counts.get(b.id)||0)-(counts.get(a.id)||0)||a.name.localeCompare(b.name,'ko')).forEach(r=>{
   const item=el('div','item'),description=el('div'),button=optionButton(mine?.restaurant_id===r.id?'✓ 내 투표':`투표 ${counts.get(r.id)||0}`,()=>vote(r.id),mine?.restaurant_id===r.id?'selected':'');
   description.append(el('strong','',r.name),el('small','',`${r.category} · ${counts.get(r.id)||0}표`));item.append(description,button);vl.append(item);
  });
  if(!restaurants.length)vl.append(el('p','muted','식당 목록이 비어 있어요. 식당을 추가해 주세요.'));
- const filters=$('filters');filters.replaceChildren();['전체',...cats].forEach(c=>filters.append(optionButton(c,()=>{filter=c;render()},c===filter?'active':'')));
- const summary=$('menuSummary');summary.replaceChildren();
- cats.forEach(cat=>{const group=restaurants.filter(r=>r.category===cat);const block=el('details','menu-group');const heading=el('summary','',`${cat} (${group.length})`);const names=el('div','menu-names');group.forEach(r=>names.append(el('span','',r.name)));block.append(heading,names);summary.append(block)});
- const rl=$('restaurantList');rl.replaceChildren();restaurants.filter(r=>filter==='전체'||filter===r.category).forEach(r=>{
-  const item=el('div','item'),description=el('div');description.append(el('strong','',r.name),el('small','',r.category));
-  item.append(description,optionButton('삭제',()=>removeRestaurant(r),'remove'));rl.append(item);
+ const groups=$('restaurantGroups');groups.replaceChildren();
+ cats.forEach(cat=>{
+  const members=restaurants.filter(r=>r.category===cat);
+  const detail=el('details','restaurant-group');detail.open=openGroups.has(cat);
+  const heading=el('summary','group-heading',`${cat}  ·  ${members.length}곳`);
+  heading.addEventListener('click',()=>{if(detail.open)openGroups.delete(cat);else openGroups.add(cat)});
+  detail.append(heading);
+  const content=el('div','group-list');members.forEach(r=>{
+   const row=el('div','item'),description=el('div','restaurant-name');description.append(el('strong','',r.name));
+   row.append(description,optionButton('식당 삭제',()=>removeRestaurant(r),'remove'));content.append(row);
+  }); detail.append(content);groups.append(detail);
  });
+ groups.hidden=!summaryOpen;
  const result=draws.filter(d=>d.draw_day===today).sort((a,b)=>b.id-a.id)[0];
  if(result){const r=restaurants.find(r=>r.id===result.restaurant_id);text('winner',r?.name||'삭제된 식당');text('winnerDetail',r?`🎉 ${r.category} · 오늘의 공동 룰렛 결과`:'이 식당은 목록에서 삭제됐어요.');}
  else{text('winner','오늘의 메뉴를 뽑아볼까요?');text('winnerDetail','룰렛을 누르면 결과가 팀원 모두에게 보여요.');}
@@ -40,7 +51,7 @@ function render(){
 async function refresh(){if(!db)return;const results=await Promise.all([
  db.from('restaurants').select('*').order('id'),db.from('votes').select('*').eq('vote_day',day()),db.from('draws').select('*').eq('draw_day',day()).order('id',{ascending:false}).limit(1)]);
  const error=results.find(r=>r.error)?.error;if(error){notify('데이터 읽기 실패: '+error.message);return;}
- [restaurants,votes,draws]=results.map(r=>r.data||[]);render();if(osmResults.length)renderOsm();}
+ [restaurants,votes,draws]=results.map(r=>r.data||[]);render();}
 async function vote(id){if(!db||!user)return;const mine=votes.find(v=>v.voter_id===user.id&&v.vote_day===day());let res;
  if(mine?.restaurant_id===id){res=await db.from('votes').delete().eq('id',mine.id).eq('voter_id',user.id)}
  else if(mine){res=await db.from('votes').update({restaurant_id:id}).eq('id',mine.id).eq('voter_id',user.id)}
@@ -49,13 +60,53 @@ async function vote(id){if(!db||!user)return;const mine=votes.find(v=>v.voter_id
 async function removeRestaurant(r){if(!confirm(`“${r.name}”을(를) 모두의 목록에서 삭제할까요? 관련 투표도 삭제됩니다.`))return;const {error}=await db.from('restaurants').delete().eq('id',r.id);if(error)notify(error.message);else{notify('식당을 삭제했어요.');await refresh();}}
 $('addForm').addEventListener('submit',async e=>{e.preventDefault();if(!db)return;const category=$('categoryInput').value.trim(),name=$('restaurantInput').value.trim();if(!category||!name)return;
  const {error}=await db.from('restaurants').insert({category,name});if(error)notify(error.code==='23505'?'이미 등록된 이름이에요.':error.message);else{$('restaurantInput').value='';notify('새 식당이 팀 전체에 추가됐어요.');await refresh();}});
-$('toggleMenu').addEventListener('click',()=>{summaryOpen=!summaryOpen;$('menuSummary').hidden=!summaryOpen;$('toggleMenu').setAttribute('aria-expanded',String(summaryOpen));text('toggleMenu',`📋 전체 식당 ${restaurants.length}곳 한눈에 보기 ${summaryOpen?'▲':'▼'}`)});
-$('mode').addEventListener('change',()=>{if($('mode').value==='category'){text('categoryResult','🎲 카테고리를 먼저 뽑고, 그 안에서 식당을 뽑아요.');$('categoryResult').hidden=false;}else $('categoryResult').hidden=true;});
-$('draw').addEventListener('click',async()=>{if(busy||!db)return;if(!poolRestaurants().length){notify(drawPool==='new'?'오늘 새로 등록된 식당이 없어요. 학동역 검색에서 식당을 추가해주세요.':'식당을 먼저 추가해주세요.');return;}
- busy=true;$('draw').disabled=true;$('wheel').classList.remove('spin');void $('wheel').offsetWidth;$('wheel').classList.add('spin');
- let pool=poolRestaurants();const mode=$('mode').value;if(mode==='votes'){const votedIds=new Set(votes.filter(v=>v.vote_day===day()).map(v=>v.restaurant_id));pool=pool.filter(r=>votedIds.has(r.id));if(!pool.length){notify('아직 오늘 투표한 식당이 없어요.');busy=false;$('draw').disabled=false;return;}}
- if(mode==='category'){const cats=[...new Set(pool.map(r=>r.category))],cat=cats[Math.floor(Math.random()*cats.length)];pool=pool.filter(r=>r.category===cat);$('categoryResult').hidden=false;text('categoryResult',`🎉 1단계 카테고리 당첨: ${cat} → 2단계 식당 추첨`);}
- const selected=pool[Math.floor(Math.random()*pool.length)];const {error}=await db.from('draws').insert({restaurant_id:selected.id,draw_day:day()});if(error)notify('뽑기 저장 실패: '+error.message);else{notify('결과를 모든 팀원에게 공유했어요!');await refresh();if(mode==='category'){text('winnerDetail',`🎉 1단계 ${selected.category} → 2단계 ${selected.name}`);}}setTimeout(()=>{busy=false;$('draw').disabled=false;$('wheel').classList.remove('spin')},1050);
+$('toggleMenu').addEventListener('click',()=>{summaryOpen=!summaryOpen;$('restaurantGroups').hidden=!summaryOpen;$('toggleMenu').setAttribute('aria-expanded',String(summaryOpen));text('toggleMenu',`📋 카테고리별 전체 식당 보기 ${summaryOpen?'▲':'▼'}`)});
+$('toggleCategories').addEventListener('click',()=>{const shown=$('categoryChoices').hidden;$('categoryChoices').hidden=!shown;$('toggleCategories').setAttribute('aria-expanded',String(shown));});
+$('selectAllCats').addEventListener('click',()=>{chosenCategories=new Set(restaurants.map(r=>r.category));render()});
+$('clearCats').addEventListener('click',()=>{chosenCategories.clear();render()});
+$('draw').addEventListener('click',async()=>{
+ if(busy||!db)return;
+ const pool=restaurants.filter(r=>chosenCategories.has(r.category));
+ if(!pool.length){notify('카테고리를 하나 이상 선택해 주세요.');return;}
+ busy=true;$('draw').disabled=true;
+ const wheel=$('wheel');wheel.classList.remove('spin');void wheel.offsetWidth;wheel.classList.add('spin');
+ text('winner','🍱 점심 룰렛 돌리는 중…');text('winnerDetail','선택한 카테고리에서 식당을 추첨하고 있어요.');
+ const selected=pool[Math.floor(Math.random()*pool.length)];
+ // 정확히 한 바퀴, 3초 후에 결과가 공유되도록 처리
+ await new Promise(resolve=>setTimeout(resolve,3000));
+ try{
+  const {error}=await db.from('draws').insert({restaurant_id:selected.id,draw_day:day()});
+  if(error)notify('뽑기 저장 실패: '+error.message);
+  else{notify('점심 결과를 팀원 모두에게 공유했어요!');await refresh();}
+ }catch(err){notify('뽑기 오류: '+err.message)}
+ finally{wheel.classList.remove('spin');busy=false;$('draw').disabled=false;}
+});
+function readCsvRows(raw){
+ const result=[];let row=[],field='',quoted=false;
+ for(let i=0;i<raw.length;i++){
+  const c=raw[i];if(c==='"'){if(quoted&&raw[i+1]==='"'){field+='"';i++;}else quoted=!quoted;}
+  else if(c===','&&!quoted){row.push(field);field='';}
+  else if((c==='\n'||c==='\n')&&!quoted){if(c==='\n'&&raw[i+1]==='\n')i++;row.push(field);if(row.some(v=>v.trim()))result.push(row);row=[];field='';}
+  else field+=c;
+ }
+ row.push(field);if(row.some(v=>v.trim()))result.push(row);
+ return result;
+}
+$('importFile').addEventListener('click',async()=>{
+ const f=$('restaurantFile').files?.[0];if(!f){notify('먼저 CSV 파일을 선택해 주세요.');return;}
+ if(!db){notify('Supabase 연결을 확인해 주세요.');return;}
+ if(f.size>1024*1024){notify('파일 크기는 1MB 이하로 올려주세요.');return;}
+ const btn=$('importFile');btn.disabled=true;
+ try{
+  const raw=await f.text(),rows=readCsvRows(raw.replace(/^﻿/,''));
+  const body=rows.filter((r,i)=>!(i===0&&/카테고리|category/i.test(r[0]||'')));
+  const known=new Set(restaurants.map(r=>r.name.normalize('NFKC').trim().toLowerCase()));
+  const newRows=[];
+  for(const cols of body){const category=(cols[0]||'').trim(),name=(cols[1]||'').trim();const key=name.normalize('NFKC').toLowerCase();if(!category||!name||known.has(key))continue;if(category.length>50||name.length>120)continue;known.add(key);newRows.push({category,name})}
+  if(!newRows.length){notify('추가할 새 식당이 없어요. CSV는 카테고리,식당 이름 형식이어야 해요.');return;}
+  let added=0;for(let i=0;i<newRows.length;i+=100){const chunk=newRows.slice(i,i+100);const {data,error}=await db.from('restaurants').upsert(chunk,{onConflict:'name',ignoreDuplicates:true}).select('id');if(error)throw error;added+=(data||[]).length}
+  notify(`${added}개 식당을 등록했어요. 중복 항목은 제외했어요.`);$('restaurantFile').value='';await refresh();
+ }catch(e){notify('파일 등록 실패: '+e.message)}finally{btn.disabled=false}
 });
 document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b===button));$('voteTab').hidden=button.dataset.tab!=='vote';$('restaurantsTab').hidden=button.dataset.tab!=='restaurants';}));
 async function start(){if(!ready){$('setup').hidden=false;text('connection','⚠ 설정 필요');$('draw').disabled=true;return;}
@@ -66,42 +117,3 @@ async function start(){if(!ready){$('setup').hidden=false;text('connection','⚠
  }catch(err){text('connection','● 연결 실패');notify(`연결 실패: ${err.message}. Supabase 익명 로그인 설정을 확인해 주세요.`);}}
 start();
 
-// OpenStreetMap / Overpass search + bulk insert. Search results stay in memory until selected.
-const OSM_CATEGORIES=['한식','중식','일식','양식','분식','베트남식','기타'];
-let enabledOsm=new Set(OSM_CATEGORIES),osmResults=[],osmSelected=new Set(),osmBusy=false;
-function normalizeName(s){return String(s||'').normalize('NFKC').toLocaleLowerCase('ko').replace(/[\s\u00b7\-()]/g,'');}
-function existingOsm(r){return restaurants.some(v=>normalizeName(v.name)===normalizeName(r.name));}
-function updateOsmButtons(){
- const allowed=$('osmRights').checked;const selectable=osmResults.filter(r=>!existingOsm(r));
- $('osmSelectedCount').textContent=`${[...osmSelected].filter(i=>osmResults[i]&&!existingOsm(osmResults[i])).length}개 선택`;
- $('osmImport').disabled=!db||!user||osmBusy||!allowed||![...osmSelected].some(i=>osmResults[i]&&!existingOsm(osmResults[i]));
- $('osmSelectAll').checked=selectable.length>0&&osmResults.every((r,i)=>existingOsm(r)||osmSelected.has(i));
-}
-function renderOsm(){
- const holder=$('osmResults');holder.replaceChildren();
- osmResults.forEach((r,i)=>{const duplicate=existingOsm(r),line=el('div','item');const label=el('label','import-row'),cb=document.createElement('input');cb.type='checkbox';cb.checked=osmSelected.has(i);cb.disabled=duplicate;cb.addEventListener('change',()=>{if(cb.checked)osmSelected.add(i);else osmSelected.delete(i);updateOsmButtons()});const desc=el('span');desc.append(el('strong','',r.name),el('small','',`${r.category} · ${r.osmCategory||'음식점'} · 약 ${r.distance}m`),el('small','',r.address||'주소 없음'));label.append(cb,desc);const a=el('a','', '지도에서 보기');a.href=r.sourceLink;a.target='_blank';a.rel='noopener noreferrer';line.append(label,a);if(duplicate){line.classList.add('muted');desc.append(el('small','','이미 팀 목록에 등록됨'));}holder.append(line)});
- if(!osmResults.length)holder.append(el('p','muted','검색 결과가 없습니다. 선택한 카테고리나 OpenStreetMap 등록 상태를 확인해 주세요.'));
- updateOsmButtons();
-}
-function renderOsmCategories(){const box=$('osmCategories');box.replaceChildren(...OSM_CATEGORIES.map(c=>optionButton(c,()=>{if(enabledOsm.has(c))enabledOsm.delete(c);else enabledOsm.add(c);renderOsmCategories()},enabledOsm.has(c)?'active':'')));}
-renderOsmCategories();
-$('osmSelectAll').addEventListener('change',e=>{osmResults.forEach((r,i)=>{if(!existingOsm(r)){if(e.target.checked)osmSelected.add(i);else osmSelected.delete(i)}});renderOsm()});
-$('osmRights').addEventListener('change',updateOsmButtons);
-$('osmSearch').addEventListener('click',async()=>{
- if(osmBusy||!enabledOsm.size)return;
- osmBusy=true;osmSelected.clear();osmResults=[];$('osmSearch').disabled=true;
- text('osmStatus','학동역 주변 식당 검색 중…');
- try{const params=new URLSearchParams();OSM_CATEGORIES.filter(c=>enabledOsm.has(c)).forEach(c=>params.append('category',c));const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),12000);let response;try{response=await fetch('/api/osm-restaurants?'+params.toString(),{cache:'no-store',signal:controller.signal});}finally{clearTimeout(timeout)}const data=await response.json();if(!response.ok)throw Error(data.error||'OpenStreetMap 검색 요청 실패');osmResults=data.items||[];text('osmStatus',`${osmResults.length}곳 검색됨 · OpenStreetMap 데이터`);}
- catch(e){text('osmStatus',e.name==='AbortError'?'검색이 12초를 넘어 중단됐어요. 무료 지도 서버가 혼잡합니다. 식당 관리에서 직접 등록해 주세요.':'검색 실패: '+e.message)}finally{osmBusy=false;$('osmSearch').disabled=false;renderOsm()}
-});
-$('osmImport').addEventListener('click',async()=>{
- if(!db||!user||osmBusy||!$('osmRights').checked)return;
- const selected=[...osmSelected].map(i=>osmResults[i]).filter(r=>r&&!existingOsm(r));
- if(!selected.length)return;
- if(!confirm(`${selected.length}개 식당명을 팀 공용 데이터베이스에 저장할까요? 식당 이름과 위치를 확인했나요?`))return;
- osmBusy=true;updateOsmButtons();
- try{const byName=new Map();selected.forEach(r=>{const name=normalizeName(r.name);if(!byName.has(name))byName.set(name,{name:r.name,category:r.category})});
-  const rows=[...byName.values()];const {data,error}=await db.from('restaurants').upsert(rows,{onConflict:'name',ignoreDuplicates:true}).select('name');if(error)throw error;
-  const added=data?.length||0;text('osmStatus',`${added}개 새 식당 등록 완료! (${rows.length-added}개 이름 중복으로 제외)`);osmSelected.clear();await refresh();renderOsm();}
- catch(e){text('osmStatus','등록 실패: '+e.message)}finally{osmBusy=false;updateOsmButtons()}
-});
