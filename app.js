@@ -3,7 +3,7 @@ const $=id=>document.getElementById(id);
 const config=window.LUNCH_CONFIG||{};
 const ready=config.SUPABASE_URL?.startsWith('https://')&&!config.SUPABASE_URL.includes('YOUR_PROJECT')&&config.SUPABASE_PUBLISHABLE_KEY&&!config.SUPABASE_PUBLISHABLE_KEY.includes('YOUR_');
 let db,user,restaurants=[],votes=[],draws=[],busy=false;
-let summaryOpen=true, chosenCategories=new Set(),initializedCategories=false,openGroups=new Set();
+let summaryOpen=false, chosenCategories=new Set(),initializedCategories=false,openGroups=new Set();
 const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const text=(id,s)=>$(id).textContent=s;
 const notify=(s)=>text('message',s);
@@ -40,7 +40,7 @@ function render(){
   detail.append(heading);
   const content=el('div','group-list');members.forEach(r=>{
    const row=el('div','item'),description=el('div','restaurant-name');description.append(el('strong','',r.name));
-   row.append(description,optionButton('식당 삭제',()=>removeRestaurant(r),'remove'));content.append(row);
+   const actions=el('div','restaurant-actions');actions.append(optionButton('수정',()=>editRestaurant(r),'edit'),optionButton('식당 삭제',()=>removeRestaurant(r),'remove'));row.append(description,actions);content.append(row);
   }); detail.append(content);groups.append(detail);
  });
  groups.hidden=!summaryOpen;
@@ -57,6 +57,19 @@ async function vote(id){if(!db||!user)return;const mine=votes.find(v=>v.voter_id
  else if(mine){res=await db.from('votes').update({restaurant_id:id}).eq('id',mine.id).eq('voter_id',user.id)}
  else{res=await db.from('votes').insert({restaurant_id:id,voter_id:user.id,vote_day:day()});}
  if(res.error)notify('투표 실패: '+res.error.message);else notify('투표가 반영됐어요.');await refresh();}
+async function editRestaurant(r){
+ if(!db||!user)return;
+ const updated=prompt(`식당 이름 수정\n기존: ${r.name}`,r.name);
+ if(updated===null)return;
+ const name=updated.trim();
+ if(!name){notify('식당 이름을 입력해 주세요.');return;}
+ if(name.length>120){notify('식당 이름은 120자 이내로 입력해 주세요.');return;}
+ if(name===r.name){notify('변경된 이름이 없어요.');return;}
+ if(restaurants.some(x=>x.id!==r.id&&x.name.trim().toLocaleLowerCase('ko')===name.toLocaleLowerCase('ko'))){notify('이미 등록된 식당 이름이에요.');return;}
+ const {error}=await db.from('restaurants').update({name}).eq('id',r.id);
+ if(error){notify(error.code==='23505'?'이미 등록된 식당 이름이에요.':'이름 수정 실패: '+error.message);return;}
+ notify(`식당 이름을 “${name}”으로 수정했어요.`);await refresh();
+}
 async function removeRestaurant(r){if(!confirm(`“${r.name}”을(를) 모두의 목록에서 삭제할까요? 관련 투표도 삭제됩니다.`))return;const {error}=await db.from('restaurants').delete().eq('id',r.id);if(error)notify(error.message);else{notify('식당을 삭제했어요.');await refresh();}}
 $('addForm').addEventListener('submit',async e=>{e.preventDefault();if(!db)return;const category=$('categoryInput').value.trim(),name=$('restaurantInput').value.trim();if(!category||!name)return;
  const {error}=await db.from('restaurants').insert({category,name});if(error)notify(error.code==='23505'?'이미 등록된 이름이에요.':error.message);else{$('restaurantInput').value='';notify('새 식당이 팀 전체에 추가됐어요.');await refresh();}});
@@ -81,34 +94,15 @@ $('draw').addEventListener('click',async()=>{
  }catch(err){notify('뽑기 오류: '+err.message)}
  finally{wheel.classList.remove('spin');busy=false;$('draw').disabled=false;}
 });
-function readCsvRows(raw){
- const result=[];let row=[],field='',quoted=false;
- for(let i=0;i<raw.length;i++){
-  const c=raw[i];if(c==='"'){if(quoted&&raw[i+1]==='"'){field+='"';i++;}else quoted=!quoted;}
-  else if(c===','&&!quoted){row.push(field);field='';}
-  else if((c==='\n'||c==='\n')&&!quoted){if(c==='\n'&&raw[i+1]==='\n')i++;row.push(field);if(row.some(v=>v.trim()))result.push(row);row=[];field='';}
-  else field+=c;
- }
- row.push(field);if(row.some(v=>v.trim()))result.push(row);
- return result;
-}
-$('importFile').addEventListener('click',async()=>{
- const f=$('restaurantFile').files?.[0];if(!f){notify('먼저 CSV 파일을 선택해 주세요.');return;}
- if(!db){notify('Supabase 연결을 확인해 주세요.');return;}
- if(f.size>1024*1024){notify('파일 크기는 1MB 이하로 올려주세요.');return;}
- const btn=$('importFile');btn.disabled=true;
- try{
-  const raw=await f.text(),rows=readCsvRows(raw.replace(/^﻿/,''));
-  const body=rows.filter((r,i)=>!(i===0&&/카테고리|category/i.test(r[0]||'')));
-  const known=new Set(restaurants.map(r=>r.name.normalize('NFKC').trim().toLowerCase()));
-  const newRows=[];
-  for(const cols of body){const category=(cols[0]||'').trim(),name=(cols[1]||'').trim();const key=name.normalize('NFKC').toLowerCase();if(!category||!name||known.has(key))continue;if(category.length>50||name.length>120)continue;known.add(key);newRows.push({category,name})}
-  if(!newRows.length){notify('추가할 새 식당이 없어요. CSV는 카테고리,식당 이름 형식이어야 해요.');return;}
-  let added=0;for(let i=0;i<newRows.length;i+=100){const chunk=newRows.slice(i,i+100);const {data,error}=await db.from('restaurants').upsert(chunk,{onConflict:'name',ignoreDuplicates:true}).select('id');if(error)throw error;added+=(data||[]).length}
-  notify(`${added}개 식당을 등록했어요. 중복 항목은 제외했어요.`);$('restaurantFile').value='';await refresh();
- }catch(e){notify('파일 등록 실패: '+e.message)}finally{btn.disabled=false}
+// 오늘의 투표와 식당 관리는 각 버튼으로 독립적으로 접고 펼칩니다.
+[['toggleVote','voteTab'],['toggleRestaurants','restaurantsTab']].forEach(([buttonId,sectionId])=>{
+ const button=$(buttonId),section=$(sectionId);
+ button.addEventListener('click',()=>{
+  const shouldOpen=section.hidden;
+  section.hidden=!shouldOpen;
+  button.setAttribute('aria-expanded',String(shouldOpen));
+ });
 });
-document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b===button));$('voteTab').hidden=button.dataset.tab!=='vote';$('restaurantsTab').hidden=button.dataset.tab!=='restaurants';}));
 async function start(){if(!ready){$('setup').hidden=false;text('connection','⚠ 설정 필요');$('draw').disabled=true;return;}
  try{db=createClient(config.SUPABASE_URL,config.SUPABASE_PUBLISHABLE_KEY);let {data:{session}}=await db.auth.getSession();if(!session){const {data,error}=await db.auth.signInAnonymously();if(error)throw error;session=data.session;}user=session.user;
  text('connection','● 실시간 연결');$('connection').classList.add('live');await refresh();
