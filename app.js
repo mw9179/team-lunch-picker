@@ -86,8 +86,8 @@ $('osmSearch').addEventListener('click',async()=>{
  if(osmBusy||!enabledOsm.size)return;
  osmBusy=true;osmSelected.clear();osmResults=[];$('osmSearch').disabled=true;
  text('osmStatus','학동역 주변 식당 검색 중…');
- try{const params=new URLSearchParams();OSM_CATEGORIES.filter(c=>enabledOsm.has(c)).forEach(c=>params.append('category',c));const response=await fetch('/api/osm-restaurants?'+params.toString(),{cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.error||'OpenStreetMap 검색 요청 실패');osmResults=data.items||[];text('osmStatus',`${osmResults.length}곳 검색됨 · OpenStreetMap 데이터`);}
- catch(e){text('osmStatus','검색 실패: '+e.message)}finally{osmBusy=false;$('osmSearch').disabled=false;renderOsm()}
+ try{const params=new URLSearchParams();OSM_CATEGORIES.filter(c=>enabledOsm.has(c)).forEach(c=>params.append('category',c));const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),12000);let response;try{response=await fetch('/api/osm-restaurants?'+params.toString(),{cache:'no-store',signal:controller.signal});}finally{clearTimeout(timeout)}const data=await response.json();if(!response.ok)throw Error(data.error||'OpenStreetMap 검색 요청 실패');osmResults=data.items||[];text('osmStatus',`${osmResults.length}곳 검색됨 · OpenStreetMap 데이터`);}
+ catch(e){text('osmStatus',e.name==='AbortError'?'검색이 12초를 넘어 중단됐어요. 무료 지도 서버가 혼잡합니다. 식당 관리에서 직접 등록해 주세요.':'검색 실패: '+e.message)}finally{osmBusy=false;$('osmSearch').disabled=false;renderOsm()}
 });
 $('osmImport').addEventListener('click',async()=>{
  if(!db||!user||osmBusy||!$('osmRights').checked)return;
