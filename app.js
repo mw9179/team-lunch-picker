@@ -3,6 +3,7 @@ const $=id=>document.getElementById(id);
 const config=window.LUNCH_CONFIG||{};
 const ready=config.SUPABASE_URL?.startsWith('https://')&&!config.SUPABASE_URL.includes('YOUR_PROJECT')&&config.SUPABASE_PUBLISHABLE_KEY&&!config.SUPABASE_PUBLISHABLE_KEY.includes('YOUR_');
 let db,user,restaurants=[],votes=[],draws=[],filter='전체',busy=false,drawPool='team';
+let summaryOpen=false;
 const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const createdToday=r=>r.created_at&&new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(r.created_at))===day();
 function poolRestaurants(){return drawPool==='new'?restaurants.filter(createdToday):restaurants;}
@@ -16,7 +17,7 @@ function render(){
  const today=day(),todayVotes=votes.filter(v=>v.vote_day===today);
  const counts=new Map();todayVotes.forEach(v=>counts.set(v.restaurant_id,(counts.get(v.restaurant_id)||0)+1));
  const mine=todayVotes.find(v=>v.voter_id===user?.id);
- text('restaurantCount',`${restaurants.length}곳`);text('voteCount',`${todayVotes.length}명 참여`);updatePool();
+ text('restaurantCount',`${restaurants.length}곳`);text('toggleMenu',`📋 전체 식당 ${restaurants.length}곳 한눈에 보기 ${summaryOpen?'▲':'▼'}`);text('voteCount',`${todayVotes.length}명 참여`);updatePool();
  const cats=[...new Set(restaurants.map(r=>r.category))].sort((a,b)=>a.localeCompare(b,'ko'));
  $('categories').replaceChildren(...cats.map(c=>{const n=el('option');n.value=c;return n}));
  const vl=$('voteList');vl.replaceChildren();
@@ -26,6 +27,8 @@ function render(){
  });
  if(!restaurants.length)vl.append(el('p','muted','식당 목록이 비어 있어요. 식당을 추가해 주세요.'));
  const filters=$('filters');filters.replaceChildren();['전체',...cats].forEach(c=>filters.append(optionButton(c,()=>{filter=c;render()},c===filter?'active':'')));
+ const summary=$('menuSummary');summary.replaceChildren();
+ cats.forEach(cat=>{const group=restaurants.filter(r=>r.category===cat);const block=el('details','menu-group');const heading=el('summary','',`${cat} (${group.length})`);const names=el('div','menu-names');group.forEach(r=>names.append(el('span','',r.name)));block.append(heading,names);summary.append(block)});
  const rl=$('restaurantList');rl.replaceChildren();restaurants.filter(r=>filter==='전체'||filter===r.category).forEach(r=>{
   const item=el('div','item'),description=el('div');description.append(el('strong','',r.name),el('small','',r.category));
   item.append(description,optionButton('삭제',()=>removeRestaurant(r),'remove'));rl.append(item);
@@ -46,11 +49,13 @@ async function vote(id){if(!db||!user)return;const mine=votes.find(v=>v.voter_id
 async function removeRestaurant(r){if(!confirm(`“${r.name}”을(를) 모두의 목록에서 삭제할까요? 관련 투표도 삭제됩니다.`))return;const {error}=await db.from('restaurants').delete().eq('id',r.id);if(error)notify(error.message);else{notify('식당을 삭제했어요.');await refresh();}}
 $('addForm').addEventListener('submit',async e=>{e.preventDefault();if(!db)return;const category=$('categoryInput').value.trim(),name=$('restaurantInput').value.trim();if(!category||!name)return;
  const {error}=await db.from('restaurants').insert({category,name});if(error)notify(error.code==='23505'?'이미 등록된 이름이에요.':error.message);else{$('restaurantInput').value='';notify('새 식당이 팀 전체에 추가됐어요.');await refresh();}});
+$('toggleMenu').addEventListener('click',()=>{summaryOpen=!summaryOpen;$('menuSummary').hidden=!summaryOpen;$('toggleMenu').setAttribute('aria-expanded',String(summaryOpen));text('toggleMenu',`📋 전체 식당 ${restaurants.length}곳 한눈에 보기 ${summaryOpen?'▲':'▼'}`)});
+$('mode').addEventListener('change',()=>{if($('mode').value==='category'){text('categoryResult','🎲 카테고리를 먼저 뽑고, 그 안에서 식당을 뽑아요.');$('categoryResult').hidden=false;}else $('categoryResult').hidden=true;});
 $('draw').addEventListener('click',async()=>{if(busy||!db)return;if(!poolRestaurants().length){notify(drawPool==='new'?'오늘 새로 등록된 식당이 없어요. 학동역 검색에서 식당을 추가해주세요.':'식당을 먼저 추가해주세요.');return;}
  busy=true;$('draw').disabled=true;$('wheel').classList.remove('spin');void $('wheel').offsetWidth;$('wheel').classList.add('spin');
  let pool=poolRestaurants();const mode=$('mode').value;if(mode==='votes'){const votedIds=new Set(votes.filter(v=>v.vote_day===day()).map(v=>v.restaurant_id));pool=pool.filter(r=>votedIds.has(r.id));if(!pool.length){notify('아직 오늘 투표한 식당이 없어요.');busy=false;$('draw').disabled=false;return;}}
- if(mode==='category'){const cats=[...new Set(pool.map(r=>r.category))],cat=cats[Math.floor(Math.random()*cats.length)];pool=pool.filter(r=>r.category===cat);}
- const selected=pool[Math.floor(Math.random()*pool.length)];const {error}=await db.from('draws').insert({restaurant_id:selected.id,draw_day:day()});if(error)notify('뽑기 저장 실패: '+error.message);else{notify('결과를 모든 팀원에게 공유했어요!');await refresh();}setTimeout(()=>{busy=false;$('draw').disabled=false;$('wheel').classList.remove('spin')},1050);
+ if(mode==='category'){const cats=[...new Set(pool.map(r=>r.category))],cat=cats[Math.floor(Math.random()*cats.length)];pool=pool.filter(r=>r.category===cat);$('categoryResult').hidden=false;text('categoryResult',`🎉 1단계 카테고리 당첨: ${cat} → 2단계 식당 추첨`);}
+ const selected=pool[Math.floor(Math.random()*pool.length)];const {error}=await db.from('draws').insert({restaurant_id:selected.id,draw_day:day()});if(error)notify('뽑기 저장 실패: '+error.message);else{notify('결과를 모든 팀원에게 공유했어요!');await refresh();if(mode==='category'){text('winnerDetail',`🎉 1단계 ${selected.category} → 2단계 ${selected.name}`);}}setTimeout(()=>{busy=false;$('draw').disabled=false;$('wheel').classList.remove('spin')},1050);
 });
 document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b===button));$('voteTab').hidden=button.dataset.tab!=='vote';$('restaurantsTab').hidden=button.dataset.tab!=='restaurants';}));
 async function start(){if(!ready){$('setup').hidden=false;text('connection','⚠ 설정 필요');$('draw').disabled=true;return;}

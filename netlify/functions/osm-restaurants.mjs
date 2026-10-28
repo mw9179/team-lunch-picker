@@ -43,7 +43,7 @@ export default async request=>{
    elements=await Promise.any(endpoints.map(fetchFrom));
    cache.set(key,{time:Date.now(),elements});
   }catch(e){
-   return response(503,{error:'무료 지도 서버가 8초 내에 응답하지 않았어요. 이 시간에는 식당 직접 등록을 이용해 주세요. 무료 검색 서버는 응답을 보장하지 않아요.'});
+   return response(503,{error:'무료 지도 서버가 혼잡해 응답하지 않습니다. 아래 지도 열기에서 이름을 확인하고 직접 등록할 수 있어요.'});
   }finally{clearTimeout(timer);}
 
  }
