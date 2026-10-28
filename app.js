@@ -6,7 +6,7 @@ let db,user,restaurants=[],votes=[],draws=[],filter='전체',busy=false,drawPool
 const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const createdToday=r=>r.created_at&&new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(r.created_at))===day();
 function poolRestaurants(){return drawPool==='new'?restaurants.filter(createdToday):restaurants;}
-function updatePool(){document.querySelectorAll('[data-pool]').forEach(b=>b.classList.toggle('active',b.dataset.pool===drawPool));text('poolInfo',drawPool==='new'?`오늘 새로 추가된 식당 ${poolRestaurants().length}곳에서 추첨합니다. 네이버 검색 → 팀 목록 등록 후 이용하세요.`:`직원들이 등록한 전체 식당 ${restaurants.length}곳에서 추첨합니다.`);}
+function updatePool(){document.querySelectorAll('[data-pool]').forEach(b=>b.classList.toggle('active',b.dataset.pool===drawPool));text('poolInfo',drawPool==='new'?`오늘 새로 추가된 식당 ${poolRestaurants().length}곳에서 추첨합니다. 주변 식당 검색 → 팀 목록 등록 후 이용하세요.`:`직원들이 등록한 전체 식당 ${restaurants.length}곳에서 추첨합니다.`);}
 document.querySelectorAll('[data-pool]').forEach(b=>b.addEventListener('click',()=>{drawPool=b.dataset.pool;updatePool()}));
 const text=(id,s)=>$(id).textContent=s;
 const notify=(s)=>text('message',s);
@@ -37,7 +37,7 @@ function render(){
 async function refresh(){if(!db)return;const results=await Promise.all([
  db.from('restaurants').select('*').order('id'),db.from('votes').select('*').eq('vote_day',day()),db.from('draws').select('*').eq('draw_day',day()).order('id',{ascending:false}).limit(1)]);
  const error=results.find(r=>r.error)?.error;if(error){notify('데이터 읽기 실패: '+error.message);return;}
- [restaurants,votes,draws]=results.map(r=>r.data||[]);render();if(naverResults.length)renderNaver();}
+ [restaurants,votes,draws]=results.map(r=>r.data||[]);render();if(osmResults.length)renderOsm();}
 async function vote(id){if(!db||!user)return;const mine=votes.find(v=>v.voter_id===user.id&&v.vote_day===day());let res;
  if(mine?.restaurant_id===id){res=await db.from('votes').delete().eq('id',mine.id).eq('voter_id',user.id)}
  else if(mine){res=await db.from('votes').update({restaurant_id:id}).eq('id',mine.id).eq('voter_id',user.id)}
@@ -61,42 +61,42 @@ async function start(){if(!ready){$('setup').hidden=false;text('connection','⚠
  }catch(err){text('connection','● 연결 실패');notify(`연결 실패: ${err.message}. Supabase 익명 로그인 설정을 확인해 주세요.`);}}
 start();
 
-// NAVER API HUB search + bulk insert. Search response is transient in browser memory only.
-const NAVER_CATEGORIES=['한식','중식','일식','양식','분식','베트남식','기타'];
-let enabledNaver=new Set(NAVER_CATEGORIES),naverResults=[],naverSelected=new Set(),naverBusy=false;
+// OpenStreetMap / Overpass search + bulk insert. Search results stay in memory until selected.
+const OSM_CATEGORIES=['한식','중식','일식','양식','분식','베트남식','기타'];
+let enabledOsm=new Set(OSM_CATEGORIES),osmResults=[],osmSelected=new Set(),osmBusy=false;
 function normalizeName(s){return String(s||'').normalize('NFKC').toLocaleLowerCase('ko').replace(/[\s\u00b7\-()]/g,'');}
-function existingNaver(r){return restaurants.some(v=>normalizeName(v.name)===normalizeName(r.name));}
-function updateNaverButtons(){
- const allowed=$('naverRights').checked;const selectable=naverResults.filter(r=>!existingNaver(r));
- $('naverSelectedCount').textContent=`${[...naverSelected].filter(i=>naverResults[i]&&!existingNaver(naverResults[i])).length}개 선택`;
- $('naverImport').disabled=!db||!user||naverBusy||!allowed||![...naverSelected].some(i=>naverResults[i]&&!existingNaver(naverResults[i]));
- $('naverSelectAll').checked=selectable.length>0&&naverResults.every((r,i)=>existingNaver(r)||naverSelected.has(i));
+function existingOsm(r){return restaurants.some(v=>normalizeName(v.name)===normalizeName(r.name));}
+function updateOsmButtons(){
+ const allowed=$('osmRights').checked;const selectable=osmResults.filter(r=>!existingOsm(r));
+ $('osmSelectedCount').textContent=`${[...osmSelected].filter(i=>osmResults[i]&&!existingOsm(osmResults[i])).length}개 선택`;
+ $('osmImport').disabled=!db||!user||osmBusy||!allowed||![...osmSelected].some(i=>osmResults[i]&&!existingOsm(osmResults[i]));
+ $('osmSelectAll').checked=selectable.length>0&&osmResults.every((r,i)=>existingOsm(r)||osmSelected.has(i));
 }
-function renderNaver(){
- const holder=$('naverResults');holder.replaceChildren();
- naverResults.forEach((r,i)=>{const duplicate=existingNaver(r),line=el('div','item');const label=el('label','import-row'),cb=document.createElement('input');cb.type='checkbox';cb.checked=naverSelected.has(i);cb.disabled=duplicate;cb.addEventListener('change',()=>{if(cb.checked)naverSelected.add(i);else naverSelected.delete(i);updateNaverButtons()});const desc=el('span');desc.append(el('strong','',r.name),el('small','',`${r.category} · ${r.naverCategory||'음식점'} · 약 ${r.distance}m`),el('small','',r.address||'주소 없음'));label.append(cb,desc);const a=el('a','', '네이버에서 보기');a.href=r.sourceLink;a.target='_blank';a.rel='noopener noreferrer';line.append(label,a);if(duplicate){line.classList.add('muted');desc.append(el('small','','이미 팀 목록에 등록됨'));}holder.append(line)});
- if(!naverResults.length)holder.append(el('p','muted','검색 결과가 없습니다. 선택한 카테고리나 네이버 API 설정을 확인해 주세요.'));
- updateNaverButtons();
+function renderOsm(){
+ const holder=$('osmResults');holder.replaceChildren();
+ osmResults.forEach((r,i)=>{const duplicate=existingOsm(r),line=el('div','item');const label=el('label','import-row'),cb=document.createElement('input');cb.type='checkbox';cb.checked=osmSelected.has(i);cb.disabled=duplicate;cb.addEventListener('change',()=>{if(cb.checked)osmSelected.add(i);else osmSelected.delete(i);updateOsmButtons()});const desc=el('span');desc.append(el('strong','',r.name),el('small','',`${r.category} · ${r.osmCategory||'음식점'} · 약 ${r.distance}m`),el('small','',r.address||'주소 없음'));label.append(cb,desc);const a=el('a','', '지도에서 보기');a.href=r.sourceLink;a.target='_blank';a.rel='noopener noreferrer';line.append(label,a);if(duplicate){line.classList.add('muted');desc.append(el('small','','이미 팀 목록에 등록됨'));}holder.append(line)});
+ if(!osmResults.length)holder.append(el('p','muted','검색 결과가 없습니다. 선택한 카테고리나 OpenStreetMap 등록 상태를 확인해 주세요.'));
+ updateOsmButtons();
 }
-function renderNaverCategories(){const box=$('naverCategories');box.replaceChildren(...NAVER_CATEGORIES.map(c=>optionButton(c,()=>{if(enabledNaver.has(c))enabledNaver.delete(c);else enabledNaver.add(c);renderNaverCategories()},enabledNaver.has(c)?'active':'')));}
-renderNaverCategories();
-$('naverSelectAll').addEventListener('change',e=>{naverResults.forEach((r,i)=>{if(!existingNaver(r)){if(e.target.checked)naverSelected.add(i);else naverSelected.delete(i)}});renderNaver()});
-$('naverRights').addEventListener('change',updateNaverButtons);
-$('naverSearch').addEventListener('click',async()=>{
- if(naverBusy||!enabledNaver.size)return;
- naverBusy=true;naverSelected.clear();naverResults=[];$('naverSearch').disabled=true;
- text('naverStatus','학동역 주변 식당 검색 중…');
- try{const params=new URLSearchParams();NAVER_CATEGORIES.filter(c=>enabledNaver.has(c)).forEach(c=>params.append('category',c));const response=await fetch('/api/naver-restaurants?'+params.toString(),{cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.error||'네이버 검색 요청 실패');naverResults=data.items||[];text('naverStatus',`${naverResults.length}곳 검색됨 · ${data.queries}개 검색어 조회${data.failedQueries?` · ${data.failedQueries}개 요청 실패`:''}`);}
- catch(e){text('naverStatus','검색 실패: '+e.message)}finally{naverBusy=false;$('naverSearch').disabled=false;renderNaver()}
+function renderOsmCategories(){const box=$('osmCategories');box.replaceChildren(...OSM_CATEGORIES.map(c=>optionButton(c,()=>{if(enabledOsm.has(c))enabledOsm.delete(c);else enabledOsm.add(c);renderOsmCategories()},enabledOsm.has(c)?'active':'')));}
+renderOsmCategories();
+$('osmSelectAll').addEventListener('change',e=>{osmResults.forEach((r,i)=>{if(!existingOsm(r)){if(e.target.checked)osmSelected.add(i);else osmSelected.delete(i)}});renderOsm()});
+$('osmRights').addEventListener('change',updateOsmButtons);
+$('osmSearch').addEventListener('click',async()=>{
+ if(osmBusy||!enabledOsm.size)return;
+ osmBusy=true;osmSelected.clear();osmResults=[];$('osmSearch').disabled=true;
+ text('osmStatus','학동역 주변 식당 검색 중…');
+ try{const params=new URLSearchParams();OSM_CATEGORIES.filter(c=>enabledOsm.has(c)).forEach(c=>params.append('category',c));const response=await fetch('/api/osm-restaurants?'+params.toString(),{cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.error||'OpenStreetMap 검색 요청 실패');osmResults=data.items||[];text('osmStatus',`${osmResults.length}곳 검색됨 · OpenStreetMap 데이터`);}
+ catch(e){text('osmStatus','검색 실패: '+e.message)}finally{osmBusy=false;$('osmSearch').disabled=false;renderOsm()}
 });
-$('naverImport').addEventListener('click',async()=>{
- if(!db||!user||naverBusy||!$('naverRights').checked)return;
- const selected=[...naverSelected].map(i=>naverResults[i]).filter(r=>r&&!existingNaver(r));
+$('osmImport').addEventListener('click',async()=>{
+ if(!db||!user||osmBusy||!$('osmRights').checked)return;
+ const selected=[...osmSelected].map(i=>osmResults[i]).filter(r=>r&&!existingOsm(r));
  if(!selected.length)return;
- if(!confirm(`${selected.length}개 식당명을 팀 공용 데이터베이스에 저장할까요? 네이버 검색 결과의 저장 이용 허용 범위를 확인한 경우에만 진행하세요.`))return;
- naverBusy=true;updateNaverButtons();
+ if(!confirm(`${selected.length}개 식당명을 팀 공용 데이터베이스에 저장할까요? 식당 이름과 위치를 확인했나요?`))return;
+ osmBusy=true;updateOsmButtons();
  try{const byName=new Map();selected.forEach(r=>{const name=normalizeName(r.name);if(!byName.has(name))byName.set(name,{name:r.name,category:r.category})});
   const rows=[...byName.values()];const {data,error}=await db.from('restaurants').upsert(rows,{onConflict:'name',ignoreDuplicates:true}).select('name');if(error)throw error;
-  const added=data?.length||0;text('naverStatus',`${added}개 새 식당 등록 완료! (${rows.length-added}개 이름 중복으로 제외)`);naverSelected.clear();await refresh();renderNaver();}
- catch(e){text('naverStatus','등록 실패: '+e.message)}finally{naverBusy=false;updateNaverButtons()}
+  const added=data?.length||0;text('osmStatus',`${added}개 새 식당 등록 완료! (${rows.length-added}개 이름 중복으로 제외)`);osmSelected.clear();await refresh();renderOsm();}
+ catch(e){text('osmStatus','등록 실패: '+e.message)}finally{osmBusy=false;updateOsmButtons()}
 });

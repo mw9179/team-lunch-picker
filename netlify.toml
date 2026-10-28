@@ -3,6 +3,6 @@
   functions = "netlify/functions"
 
 [[redirects]]
-  from = "/api/naver-restaurants"
-  to = "/.netlify/functions/naver-restaurants"
+  from = "/api/osm-restaurants"
+  to = "/.netlify/functions/osm-restaurants"
   status = 200
